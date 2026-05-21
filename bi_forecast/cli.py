@@ -11,6 +11,7 @@ from .router import ModelRouter
 from .explain import explain_forecast
 from .recommend import recommend_actions, recommend_with_llm
 from .whatif import what_if, WhatIfScenario
+from .noshow import NoShowClassifier, synthesize_appointments
 
 
 @click.group()
@@ -170,6 +171,47 @@ def _print_summary(result, decision, feats, explanation, recs, narrative):
     if narrative:
         click.echo(click.style("\n=== Narrative ===", bold=True))
         click.echo(narrative)
+
+
+@cli.command("noshow")
+@click.option("--train-on", "train_csv", type=click.Path(exists=True), default=None,
+              help="CSV of past appointments with a `no_show` column. Defaults to synthetic data.")
+@click.option("--score", "score_csv", type=click.Path(exists=True), default=None,
+              help="CSV of upcoming appointments to score.")
+@click.option("--out", "out_csv", type=click.Path(), default=None, help="Write scored CSV here.")
+def noshow_cmd(train_csv, score_csv, out_csv):
+    """Train a no-show classifier and (optionally) score upcoming appointments."""
+    train_df = pd.read_csv(train_csv) if train_csv else synthesize_appointments(n=2000)
+    clf = NoShowClassifier()
+    evaluation = clf.fit(train_df, target="no_show")
+    click.echo(f"Trained on n={evaluation.n_train}  cv-AUC={evaluation.auc:.3f}")
+    click.echo("Top features:")
+    for k, v in list(evaluation.feature_importance.items())[:5]:
+        click.echo(f"  - {k}: {v:.3f}")
+
+    if score_csv:
+        df = pd.read_csv(score_csv)
+        scored = clf.recommend(clf.predict(df))
+        out_df = pd.DataFrame(scored)
+        click.echo("\nFirst 10 scored appointments:")
+        click.echo(out_df.head(10).to_string(index=False))
+        if out_csv:
+            out_df.to_csv(out_csv, index=False)
+            click.secho(f"Scored CSV written to {out_csv}", fg="green")
+
+
+@cli.command("serve")
+@click.option("--host", default="0.0.0.0")
+@click.option("--port", default=8000, type=int)
+@click.option("--reload/--no-reload", default=False)
+def serve_cmd(host, port, reload):
+    """Start the FastAPI service."""
+    try:
+        import uvicorn  # type: ignore
+    except ImportError:
+        click.secho("Install API deps:  pip install 'bi-forecast[api]'", fg="red")
+        sys.exit(1)
+    uvicorn.run("bi_forecast.api.app:app", host=host, port=port, reload=reload)
 
 
 if __name__ == "__main__":

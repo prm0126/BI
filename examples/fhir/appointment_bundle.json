@@ -1,0 +1,37 @@
+{
+  "resourceType": "Bundle",
+  "type": "searchset",
+  "entry": [
+    {
+      "resource": {
+        "resourceType": "Appointment",
+        "id": "appt-1001",
+        "status": "booked",
+        "serviceType": [{"text": "Cardiology Consult"}],
+        "start": "2026-05-25T10:15:00Z",
+        "end": "2026-05-25T10:45:00Z",
+        "minutesDuration": 30,
+        "participant": [
+          {"actor": {"reference": "Patient/12345", "display": "Jane Doe"}, "status": "accepted"},
+          {"actor": {"reference": "Practitioner/1234", "display": "Dr. Smith"}, "status": "accepted"},
+          {"actor": {"reference": "Location/OPD-3", "display": "Cardio OPD"}, "status": "accepted"}
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Appointment",
+        "id": "appt-1002",
+        "status": "booked",
+        "serviceType": [{"text": "Dermatology"}],
+        "start": "2026-05-25T11:00:00Z",
+        "end": "2026-05-25T11:20:00Z",
+        "minutesDuration": 20,
+        "participant": [
+          {"actor": {"reference": "Patient/22221"}, "status": "accepted"},
+          {"actor": {"reference": "Practitioner/5678", "display": "Dr. Khan"}, "status": "accepted"}
+        ]
+      }
+    }
+  ]
+}
