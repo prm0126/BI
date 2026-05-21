@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict
 import numpy as np
 import pandas as pd
+import joblib
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.preprocessing import LabelEncoder
@@ -131,6 +132,29 @@ class NoShowClassifier:
             ap_id = str(df.iloc[i][id_col]) if id_col in df.columns else f"row_{i}"
             scores.append(NoShowScore(appointment_id=ap_id, probability=float(p), risk_band=band, top_factors=top_global))
         return scores
+
+    def save(self, path: str) -> str:
+        """Persist model + encoders + feature list to a single .joblib file."""
+        if self._model is None:
+            raise RuntimeError("Model not fitted")
+        payload = {
+            "model": self._model,
+            "encoders": self._encoders,
+            "features": self._feature_names,
+            "backend": self.backend,
+            "version": 1,
+        }
+        joblib.dump(payload, path)
+        return path
+
+    @classmethod
+    def load(cls, path: str) -> "NoShowClassifier":
+        payload = joblib.load(path)
+        clf = cls(features=payload["features"], backend=payload.get("backend", "rf"))
+        clf._model = payload["model"]
+        clf._encoders = payload["encoders"]
+        clf._feature_names = payload["features"]
+        return clf
 
     def recommend(self, scores: List[NoShowScore]) -> List[dict]:
         """Map scores to operational actions."""

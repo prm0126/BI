@@ -13,8 +13,9 @@ Endpoints:
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import math
+import os
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from ..router import ModelRouter
@@ -23,6 +24,7 @@ from ..recommend import recommend_actions
 from ..whatif import what_if, WhatIfScenario
 from ..noshow import NoShowClassifier, synthesize_appointments
 from ..connectors import parse_hl7_message, hl7_to_appointment, hl7_to_admission, fhir_bundle_to_dataframe
+from ..engagement import Dispatcher, AppointmentContext
 
 
 # -------------------- request/response models --------------------
@@ -71,6 +73,23 @@ class NoShowRequest(BaseModel):
     appointments: List[AppointmentRow]
 
 
+class EngagementAppt(BaseModel):
+    appointment_id: str
+    name: str
+    phone: str
+    appointment_time: str
+    doctor: str = "your doctor"
+    location: str = "the clinic"
+    clinic: str = "your clinic"
+    risk_band: str = "low"
+
+
+class EngagementRequest(BaseModel):
+    appointments: List[EngagementAppt]
+    channel: str = "console"  # "console" | "sms" | "whatsapp"
+    skip_low_risk: bool = False
+
+
 class HL7Request(BaseModel):
     message: str
 
@@ -84,6 +103,9 @@ class FHIRRequest(BaseModel):
 
 class _State:
     noshow_model: Optional[NoShowClassifier] = None
+    model_path: Optional[str] = None
+    model_meta: Dict[str, Any] = {}
+    dispatcher: Optional[Dispatcher] = None
 
 
 def _series_to_pandas(points: List[SeriesPoint]) -> pd.Series:
@@ -171,10 +193,120 @@ def create_app() -> FastAPI:
         clf = NoShowClassifier()
         evaluation = clf.fit(df, target="no_show")
         state.noshow_model = clf
+        state.model_meta = {"source": "synthetic", "n_train": evaluation.n_train, "auc": evaluation.auc}
         return _clean({
             "auc": evaluation.auc,
             "n_train": evaluation.n_train,
             "feature_importance": evaluation.feature_importance,
+        })
+
+    @app.post("/noshow/train")
+    def noshow_train_from_upload(
+        file: "UploadFile" = File(...),  # type: ignore  # noqa: F821
+        target: str = Form("no_show"),
+        save_to: Optional[str] = Form(None),
+    ):
+        df = pd.read_csv(file.file)
+        if target not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Target column '{target}' missing")
+        clf = NoShowClassifier()
+        evaluation = clf.fit(df, target=target)
+        state.noshow_model = clf
+        state.model_meta = {
+            "source": file.filename, "n_train": evaluation.n_train, "auc": evaluation.auc,
+            "trained_at": datetime.utcnow().isoformat(),
+        }
+        if save_to:
+            os.makedirs(os.path.dirname(save_to) or ".", exist_ok=True)
+            clf.save(save_to)
+            state.model_path = save_to
+        return _clean({
+            "auc": evaluation.auc,
+            "n_train": evaluation.n_train,
+            "feature_importance": evaluation.feature_importance,
+            "saved_to": state.model_path,
+        })
+
+    @app.post("/noshow/load")
+    def noshow_load(path: str = Form(...)):
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail=f"Model file not found: {path}")
+        state.noshow_model = NoShowClassifier.load(path)
+        state.model_path = path
+        state.model_meta = {"source": "loaded", "path": path}
+        return {"loaded": path, "features": state.noshow_model._feature_names}
+
+    @app.get("/noshow/status")
+    def noshow_status():
+        return {
+            "loaded": state.noshow_model is not None,
+            "path": state.model_path,
+            "meta": _clean(state.model_meta),
+        }
+
+    @app.post("/engagement/preview")
+    def engagement_preview(req: EngagementRequest):
+        if state.dispatcher is None:
+            state.dispatcher = Dispatcher(default_channel="console")
+        appts = [AppointmentContext(**a.model_dump()) for a in req.appointments]
+        previews = state.dispatcher.preview(appts, channel=req.channel)
+        return _clean({
+            "n": len(previews),
+            "results": [
+                {
+                    "appointment_id": p.appointment_id,
+                    "risk_band": p.risk_band,
+                    "template_key": p.template_key,
+                    "rendered_body": p.rendered_body,
+                    "channel": p.delivery.channel,
+                    "to": p.delivery.to,
+                }
+                for p in previews
+            ],
+        })
+
+    @app.post("/engagement/send")
+    def engagement_send(req: EngagementRequest):
+        if state.dispatcher is None:
+            state.dispatcher = Dispatcher(default_channel=req.channel or "console")
+        appts = [AppointmentContext(**a.model_dump()) for a in req.appointments]
+        results = state.dispatcher.send_batch(appts, channel=req.channel, skip_low_risk=req.skip_low_risk)
+        return _clean({
+            "n": len(results),
+            "results": [
+                {
+                    "appointment_id": r.appointment_id,
+                    "risk_band": r.risk_band,
+                    "template_key": r.template_key,
+                    "channel": r.delivery.channel,
+                    "to": r.delivery.to,
+                    "status": r.delivery.status,
+                    "provider_id": r.delivery.provider_id,
+                    "error": r.delivery.error,
+                }
+                for r in results
+            ],
+        })
+
+    @app.get("/engagement/log")
+    def engagement_log(limit: int = 100):
+        if state.dispatcher is None:
+            return {"log": []}
+        recent = state.dispatcher.log[-limit:]
+        return _clean({
+            "n": len(recent),
+            "log": [
+                {
+                    "appointment_id": r.appointment_id,
+                    "channel": r.delivery.channel,
+                    "status": r.delivery.status,
+                    "to": r.delivery.to,
+                    "timestamp": r.delivery.timestamp.isoformat(),
+                    "body": r.rendered_body,
+                    "error": r.delivery.error,
+                }
+                for r in recent
+            ],
         })
 
     @app.post("/hooks/hl7")

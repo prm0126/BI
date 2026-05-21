@@ -20,7 +20,7 @@ xgb = ["xgboost>=2.0"]
 prophet = ["prophet>=1.1"]
 shap = ["shap>=0.44"]
 llm = ["anthropic>=0.40"]
-api = ["fastapi>=0.110", "uvicorn>=0.27", "pydantic>=2.5"]
+api = ["fastapi>=0.110", "uvicorn>=0.27", "pydantic>=2.5", "python-multipart>=0.0.9", "httpx>=0.27"]
 dashboard = ["streamlit>=1.30"]
 test = ["pytest>=7.4", "httpx>=0.27"]
 all = [
@@ -34,6 +34,7 @@ all = [
     "streamlit>=1.30",
     "pytest>=7.4",
     "httpx>=0.27",
+    "python-multipart>=0.0.9",
 ]
 
 [project.scripts]

@@ -176,18 +176,29 @@ def _print_summary(result, decision, feats, explanation, recs, narrative):
 @cli.command("noshow")
 @click.option("--train-on", "train_csv", type=click.Path(exists=True), default=None,
               help="CSV of past appointments with a `no_show` column. Defaults to synthetic data.")
+@click.option("--load-from", "load_path", type=click.Path(exists=True), default=None,
+              help="Skip training; load a previously saved model from this path.")
+@click.option("--save-to", "save_path", type=click.Path(), default=None,
+              help="Persist trained model to this path (joblib).")
 @click.option("--score", "score_csv", type=click.Path(exists=True), default=None,
               help="CSV of upcoming appointments to score.")
 @click.option("--out", "out_csv", type=click.Path(), default=None, help="Write scored CSV here.")
-def noshow_cmd(train_csv, score_csv, out_csv):
-    """Train a no-show classifier and (optionally) score upcoming appointments."""
-    train_df = pd.read_csv(train_csv) if train_csv else synthesize_appointments(n=2000)
-    clf = NoShowClassifier()
-    evaluation = clf.fit(train_df, target="no_show")
-    click.echo(f"Trained on n={evaluation.n_train}  cv-AUC={evaluation.auc:.3f}")
-    click.echo("Top features:")
-    for k, v in list(evaluation.feature_importance.items())[:5]:
-        click.echo(f"  - {k}: {v:.3f}")
+def noshow_cmd(train_csv, load_path, save_path, score_csv, out_csv):
+    """Train (or load) a no-show classifier and optionally score appointments."""
+    if load_path:
+        clf = NoShowClassifier.load(load_path)
+        click.echo(f"Loaded model from {load_path}")
+    else:
+        train_df = pd.read_csv(train_csv) if train_csv else synthesize_appointments(n=2000)
+        clf = NoShowClassifier()
+        evaluation = clf.fit(train_df, target="no_show")
+        click.echo(f"Trained on n={evaluation.n_train}  cv-AUC={evaluation.auc:.3f}")
+        click.echo("Top features:")
+        for k, v in list(evaluation.feature_importance.items())[:5]:
+            click.echo(f"  - {k}: {v:.3f}")
+        if save_path:
+            clf.save(save_path)
+            click.secho(f"Model saved to {save_path}", fg="green")
 
     if score_csv:
         df = pd.read_csv(score_csv)
@@ -198,6 +209,56 @@ def noshow_cmd(train_csv, score_csv, out_csv):
         if out_csv:
             out_df.to_csv(out_csv, index=False)
             click.secho(f"Scored CSV written to {out_csv}", fg="green")
+
+
+@cli.command("engage")
+@click.argument("appointments_csv", type=click.Path(exists=True))
+@click.option("--channel", default="console", type=click.Choice(["console", "sms", "whatsapp"]))
+@click.option("--preview/--send", default=True, help="Preview renders only; --send actually dispatches.")
+@click.option("--skip-low/--include-low", default=False, help="Skip low-risk appointments.")
+def engage_cmd(appointments_csv, channel, preview, skip_low):
+    """Render or send reminder messages for scored appointments.
+
+    Input CSV needs columns: appointment_id, name, phone, appointment_time,
+    risk_band [, doctor, location, clinic].
+    """
+    from .engagement import Dispatcher, AppointmentContext
+    df = pd.read_csv(appointments_csv)
+    required = {"appointment_id", "name", "phone", "appointment_time", "risk_band"}
+    missing = required - set(df.columns)
+    if missing:
+        click.secho(f"Missing required columns: {sorted(missing)}", fg="red")
+        sys.exit(2)
+
+    appts = [AppointmentContext(
+        appointment_id=str(r["appointment_id"]),
+        name=str(r["name"]),
+        phone=str(r["phone"]),
+        appointment_time=str(r["appointment_time"]),
+        doctor=str(r.get("doctor", "your doctor")),
+        location=str(r.get("location", "the clinic")),
+        clinic=str(r.get("clinic", "your clinic")),
+        risk_band=str(r["risk_band"]),
+    ) for _, r in df.iterrows()]
+
+    dispatcher = Dispatcher(default_channel=channel)
+    if preview:
+        results = dispatcher.preview(appts, channel=channel)
+        click.echo(f"PREVIEW — {len(results)} message(s):\n")
+        for r in results:
+            click.echo(f"[{r.risk_band:>6}] → {r.delivery.to}  ({r.template_key})")
+            click.echo(f"  {r.rendered_body}\n")
+    else:
+        results = dispatcher.send_batch(appts, channel=channel, skip_low_risk=skip_low)
+        click.echo(f"SENT — {len(results)} message(s):\n")
+        for r in results:
+            badge = {"queued": click.style("QUEUED ", fg="green"),
+                     "delivered": click.style("DELIVERED", fg="green"),
+                     "failed": click.style("FAILED ", fg="red"),
+                     "dry_run": click.style("DRY_RUN", fg="cyan")}.get(r.delivery.status, r.delivery.status)
+            click.echo(f"[{badge}] {r.appointment_id} → {r.delivery.to} ({r.delivery.channel})")
+            if r.delivery.error:
+                click.echo(f"        error: {r.delivery.error}")
 
 
 @cli.command("serve")

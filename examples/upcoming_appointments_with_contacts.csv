@@ -1,0 +1,6 @@
+appointment_id,name,phone,appointment_time,doctor,location,clinic,risk_band
+A000001,Jane Doe,+14155550101,2026-05-25 10:15,Dr. Smith,Cardiology OPD-3,Verdan Care,high
+A000002,Arjun Patel,+14155550102,2026-05-25 11:00,Dr. Khan,Dermatology OPD-1,Verdan Care,medium
+A000003,Mei Lin,+14155550103,2026-05-25 14:30,Dr. Lopez,General Med,Verdan Care,low
+A000004,Samuel Okoro,+14155550104,2026-05-25 16:00,Dr. Smith,Cardiology OPD-3,Verdan Care,high
+A000005,Ana Garcia,+14155550105,2026-05-26 09:00,Dr. Tan,Pediatrics,Verdan Care,medium
