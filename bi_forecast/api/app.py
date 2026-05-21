@@ -25,6 +25,7 @@ from ..whatif import what_if, WhatIfScenario
 from ..noshow import NoShowClassifier, synthesize_appointments
 from ..connectors import parse_hl7_message, hl7_to_appointment, hl7_to_admission, fhir_bundle_to_dataframe
 from ..engagement import Dispatcher, AppointmentContext
+from ..db import init_db, session_scope, repository
 
 
 # -------------------- request/response models --------------------
@@ -133,13 +134,15 @@ def _train_default_noshow() -> NoShowClassifier:
 
 # -------------------- app factory --------------------
 
-def create_app() -> FastAPI:
+def create_app(database_url: Optional[str] = None) -> FastAPI:
     app = FastAPI(title="bi-forecast", version="0.1.0")
     state = _State()
+    init_db(url=database_url)
 
     @app.get("/health")
     def health():
-        return {"ok": True, "service": "bi-forecast"}
+        from ..db.session import get_database_url
+        return {"ok": True, "service": "bi-forecast", "db": get_database_url()}
 
     @app.post("/forecast")
     def forecast_endpoint(req: ForecastRequest):
@@ -185,6 +188,11 @@ def create_app() -> FastAPI:
         df = pd.DataFrame([a.model_dump() for a in req.appointments])
         scores = state.noshow_model.predict(df)
         actions = state.noshow_model.recommend(scores)
+        with session_scope() as s:
+            for sc in scores:
+                repository.record_prediction(
+                    s, sc.appointment_id, sc.probability, sc.risk_band, top_factors=sc.top_factors,
+                )
         return _clean({"n": len(actions), "results": actions})
 
     @app.post("/noshow/retrain")
@@ -220,11 +228,22 @@ def create_app() -> FastAPI:
             os.makedirs(os.path.dirname(save_to) or ".", exist_ok=True)
             clf.save(save_to)
             state.model_path = save_to
+        mv_id = None
+        with session_scope() as s:
+            mv = repository.record_model_version(
+                s, name="noshow", path=state.model_path, source=file.filename,
+                n_train=evaluation.n_train,
+                auc=None if evaluation.auc != evaluation.auc else evaluation.auc,
+                feature_importance=evaluation.feature_importance,
+            )
+            s.flush()
+            mv_id = mv.id
         return _clean({
             "auc": evaluation.auc,
             "n_train": evaluation.n_train,
             "feature_importance": evaluation.feature_importance,
             "saved_to": state.model_path,
+            "model_version_id": mv_id,
         })
 
     @app.post("/noshow/load")
@@ -271,6 +290,19 @@ def create_app() -> FastAPI:
             state.dispatcher = Dispatcher(default_channel=req.channel or "console")
         appts = [AppointmentContext(**a.model_dump()) for a in req.appointments]
         results = state.dispatcher.send_batch(appts, channel=req.channel, skip_low_risk=req.skip_low_risk)
+        with session_scope() as s:
+            for r in results:
+                repository.record_delivery(
+                    s,
+                    appointment_external_id=r.appointment_id,
+                    channel=r.delivery.channel,
+                    template_key=r.template_key,
+                    to_address=r.delivery.to,
+                    body=r.rendered_body,
+                    status=r.delivery.status,
+                    provider_id=r.delivery.provider_id,
+                    error=r.delivery.error,
+                )
         return _clean({
             "n": len(results),
             "results": [
@@ -316,10 +348,82 @@ def create_app() -> FastAPI:
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         if msg.message_type.startswith("SIU"):
-            return {"type": "appointment", "row": hl7_to_appointment(msg)}
+            row = hl7_to_appointment(msg)
+            with session_scope() as s:
+                repository.record_hl7(s, msg.message_type, req.message, row)
+                if row.get("patient_id"):
+                    repository.upsert_patient(s, row["patient_id"], name=row.get("patient_name"))
+                if row.get("appointment_id"):
+                    repository.upsert_appointment(
+                        s, row["appointment_id"],
+                        doctor=row.get("doctor"), location=row.get("location"),
+                        status=row.get("status") or "scheduled", source="HL7:SIU",
+                    )
+            return {"type": "appointment", "row": row}
         if msg.message_type.startswith("ADT"):
-            return {"type": "admission", "row": hl7_to_admission(msg)}
+            row = hl7_to_admission(msg)
+            with session_scope() as s:
+                repository.record_hl7(s, msg.message_type, req.message, row)
+                if row.get("patient_id"):
+                    repository.upsert_patient(s, row["patient_id"], name=row.get("patient_name"))
+            return {"type": "admission", "row": row}
+        with session_scope() as s:
+            repository.record_hl7(s, msg.message_type, req.message, {"unrecognized": True})
         return {"type": "unknown", "message_type": msg.message_type}
+
+    # ---------- /history endpoints ----------
+
+    @app.get("/history/predictions")
+    def history_predictions(limit: int = 50):
+        with session_scope() as s:
+            rows = repository.recent_predictions(s, limit=limit)
+            return {"n": len(rows), "items": [
+                {
+                    "id": p.id, "appointment_id": p.appointment_id,
+                    "probability": p.probability, "risk_band": p.risk_band,
+                    "top_factors": p.top_factors,
+                    "created_at": p.created_at.isoformat(),
+                } for p in rows
+            ]}
+
+    @app.get("/history/deliveries")
+    def history_deliveries(limit: int = 50):
+        with session_scope() as s:
+            rows = repository.recent_deliveries(s, limit=limit)
+            return {"n": len(rows), "items": [
+                {
+                    "id": d.id, "appointment_external_id": d.appointment_external_id,
+                    "channel": d.channel, "template_key": d.template_key,
+                    "to_address": d.to_address, "status": d.status,
+                    "provider_id": d.provider_id, "error": d.error,
+                    "sent_at": d.sent_at.isoformat(),
+                } for d in rows
+            ]}
+
+    @app.get("/history/hl7")
+    def history_hl7(limit: int = 50):
+        with session_scope() as s:
+            rows = repository.recent_hl7(s, limit=limit)
+            return {"n": len(rows), "items": [
+                {
+                    "id": m.id, "message_type": m.message_type,
+                    "parsed": m.parsed, "received_at": m.received_at.isoformat(),
+                } for m in rows
+            ]}
+
+    @app.get("/history/models")
+    def history_models():
+        with session_scope() as s:
+            from sqlalchemy import select, desc
+            from ..db.models import ModelVersion
+            rows = list(s.scalars(select(ModelVersion).order_by(desc(ModelVersion.created_at))))
+            return {"n": len(rows), "items": [
+                {
+                    "id": m.id, "name": m.name, "path": m.path, "source": m.source,
+                    "n_train": m.n_train, "auc": m.auc,
+                    "created_at": m.created_at.isoformat(),
+                } for m in rows
+            ]}
 
     @app.post("/hooks/fhir")
     def fhir_hook(req: FHIRRequest):

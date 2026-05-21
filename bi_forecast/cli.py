@@ -261,6 +261,15 @@ def engage_cmd(appointments_csv, channel, preview, skip_low):
                 click.echo(f"        error: {r.delivery.error}")
 
 
+@cli.command("db-init")
+@click.option("--url", default=None, help="Override DATABASE_URL.")
+def db_init_cmd(url):
+    """Create the database schema (idempotent)."""
+    from .db import init_db, get_database_url
+    init_db(url=url)
+    click.secho(f"Schema created at {url or get_database_url()}", fg="green")
+
+
 @cli.command("serve")
 @click.option("--host", default="0.0.0.0")
 @click.option("--port", default=8000, type=int)
