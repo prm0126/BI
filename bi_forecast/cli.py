@@ -261,6 +261,97 @@ def engage_cmd(appointments_csv, channel, preview, skip_low):
                 click.echo(f"        error: {r.delivery.error}")
 
 
+@cli.command("pipeline")
+@click.argument("appointments_csv", type=click.Path(exists=True))
+@click.option("--channel", default="console", type=click.Choice(["console", "sms", "whatsapp"]))
+@click.option("--send/--dry-run", default=False, help="Dry-run renders without sending.")
+@click.option("--skip-low/--include-low", default=True)
+@click.option("--clinic", default="your clinic", help="Default clinic name for templates.")
+@click.option("--load-model", "model_path", type=click.Path(exists=True), default=None,
+              help="Use a previously saved no-show model.")
+def pipeline_cmd(appointments_csv, channel, send, skip_low, clinic, model_path):
+    """End-to-end: upload appointments → score no-show → dispatch reminders → persist."""
+    from .engagement import Dispatcher, AppointmentContext
+    from .db import session_scope, repository
+
+    df = pd.read_csv(appointments_csv)
+    required = {"appointment_id", "name", "phone", "appointment_time"}
+    missing = required - set(df.columns)
+    if missing:
+        click.secho(f"Missing required columns: {sorted(missing)}", fg="red")
+        sys.exit(2)
+
+    # Lead-time fallback.
+    if "lead_time_days" not in df.columns:
+        apt_time = pd.to_datetime(df["appointment_time"], errors="coerce")
+        df["lead_time_days"] = (apt_time - pd.Timestamp.utcnow().tz_localize(None)).dt.days.fillna(0).astype(int).clip(lower=0)
+
+    # Load or train model.
+    if model_path:
+        clf = NoShowClassifier.load(model_path)
+        click.echo(f"Loaded model from {model_path}")
+    else:
+        train_df = synthesize_appointments(n=2000)
+        clf = NoShowClassifier()
+        ev = clf.fit(train_df, target="no_show")
+        click.echo(f"Trained synthetic model (cv-AUC={ev.auc:.3f})")
+
+    scores = clf.predict(df)
+    by_band = {"high": 0, "medium": 0, "low": 0}
+    for s in scores:
+        by_band[s.risk_band] = by_band.get(s.risk_band, 0) + 1
+    click.echo(f"Scored {len(scores)} appointments: " +
+               ", ".join(f"{k}={v}" for k, v in by_band.items() if v))
+
+    # Persist via repository.
+    score_lookup = {s.appointment_id: s for s in scores}
+    with session_scope() as s_:
+        repository.ingest_appointment_dataframe(s_, df, source="cli-pipeline")
+        for sc in scores:
+            repository.record_prediction(
+                s_, sc.appointment_id, sc.probability, sc.risk_band, top_factors=sc.top_factors,
+            )
+
+    # Build dispatcher contexts.
+    contexts = []
+    for _, row in df.iterrows():
+        ap_id = str(row["appointment_id"])
+        band = score_lookup[ap_id].risk_band if ap_id in score_lookup else "low"
+        contexts.append(AppointmentContext(
+            appointment_id=ap_id,
+            name=str(row["name"]),
+            phone=str(row["phone"]),
+            appointment_time=str(row["appointment_time"]),
+            doctor=str(row["doctor"]) if "doctor" in df.columns and row.get("doctor") else "your doctor",
+            location=str(row["location"]) if "location" in df.columns and row.get("location") else "the clinic",
+            clinic=str(row["clinic"]) if "clinic" in df.columns and row.get("clinic") else clinic,
+            risk_band=band,
+        ))
+
+    dispatcher = Dispatcher(default_channel=channel)
+    if send:
+        results = dispatcher.send_batch(contexts, channel=channel, skip_low_risk=skip_low)
+        with session_scope() as s_:
+            for r in results:
+                repository.record_delivery(
+                    s_,
+                    appointment_external_id=r.appointment_id,
+                    channel=r.delivery.channel,
+                    template_key=r.template_key,
+                    to_address=r.delivery.to,
+                    body=r.rendered_body,
+                    status=r.delivery.status,
+                    provider_id=r.delivery.provider_id,
+                    error=r.delivery.error,
+                )
+        click.secho(f"\nSent {len(results)} message(s) via {channel}", fg="green")
+    else:
+        results = dispatcher.preview(contexts, channel=channel)
+        click.secho(f"\nDRY-RUN preview ({len(results)} message(s)):", fg="cyan")
+        for r in results:
+            click.echo(f"  [{r.risk_band:>6}] {r.appointment_id} → {r.delivery.to}  ({r.template_key})")
+
+
 @cli.command("db-init")
 @click.option("--url", default=None, help="Override DATABASE_URL.")
 def db_init_cmd(url):

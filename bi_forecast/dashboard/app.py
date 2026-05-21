@@ -73,6 +73,16 @@ class Api:
     def hl7_post(self, message: str) -> Dict[str, Any]:
         return self._client.post("/hooks/hl7", json={"message": message}).json()
 
+    def pipeline(self, csv_bytes: bytes, channel: str, send: bool, skip_low: bool, clinic: str) -> Dict[str, Any]:
+        files = {"file": ("pipeline.csv", csv_bytes, "text/csv")}
+        data = {
+            "channel": channel,
+            "send": str(send).lower(),
+            "skip_low_risk": str(skip_low).lower(),
+            "default_clinic": clinic,
+        }
+        return self._client.post("/pipeline/score-and-send", files=files, data=data).json()
+
 
 @st.cache_resource(show_spinner=False)
 def get_api(base_url: str) -> Api:
@@ -98,9 +108,55 @@ with st.sidebar:
     st.caption("Start the API with `bi-forecast serve --port 8000`")
 
 
-tab_overview, tab_noshow, tab_forecast, tab_engage, tab_history, tab_hl7 = st.tabs(
-    ["Overview", "No-show ops", "Forecast", "Engagement", "History", "HL7 inbox"]
+tab_overview, tab_pipeline, tab_noshow, tab_forecast, tab_engage, tab_history, tab_hl7 = st.tabs(
+    ["Overview", "Pipeline", "No-show ops", "Forecast", "Engagement", "History", "HL7 inbox"]
 )
+
+
+# ----------------------------- Pipeline (one-shot) -----------------------------
+
+with tab_pipeline:
+    st.subheader("One-call pipeline: score → send → persist")
+    st.caption(
+        "Upload an appointments CSV with at least `appointment_id`, `name`, `phone`, "
+        "`appointment_time`. Optional no-show features (`age`, `prior_no_shows`, etc.) "
+        "improve scoring accuracy. See `examples/pipeline_appointments.csv`."
+    )
+    pf = st.file_uploader("Appointments CSV", type=["csv"], key="pipe_csv")
+    c1, c2, c3 = st.columns(3)
+    pchannel = c1.selectbox("Channel", ["console", "sms", "whatsapp"], index=0, key="pipe_ch")
+    psend = c2.toggle("Actually send (else dry-run)", value=False)
+    pskip = c3.toggle("Skip low-risk", value=True)
+    pclinic = st.text_input("Default clinic name", value="Verdan Care")
+
+    if pf is not None and st.button("Run pipeline", type="primary"):
+        with st.spinner("Scoring → dispatching → persisting…"):
+            res = api.pipeline(pf.getvalue(), pchannel, psend, pskip, pclinic)
+
+        summary = res.get("summary", {})
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Input rows", summary.get("n_input", 0))
+        m2.metric("Scored", summary.get("n_scored", 0))
+        m3.metric("Dispatched", summary.get("n_sent", 0))
+        m4.metric("Mode", summary.get("mode", "?"))
+
+        if summary.get("by_risk_band"):
+            st.bar_chart(pd.Series(summary["by_risk_band"]).rename("count"))
+
+        rows = res.get("results", [])
+        if rows:
+            df = pd.DataFrame(rows)
+            st.markdown("##### Per-appointment results")
+            st.dataframe(
+                df[["appointment_id", "risk_band", "probability", "channel", "to",
+                    "status", "template_key"]],
+                hide_index=True, use_container_width=True,
+            )
+            with st.expander("Show rendered message bodies"):
+                for r in rows:
+                    badge = {"high": "🔴", "medium": "🟡", "low": "🔵"}.get(r["risk_band"], "·")
+                    st.markdown(f"{badge} **{r['appointment_id']}** → `{r['to']}` ({r['status']})")
+                    st.code(r["rendered_body"])
 
 
 # ----------------------------- Overview -----------------------------

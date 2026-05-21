@@ -95,6 +95,14 @@ class HL7Request(BaseModel):
     message: str
 
 
+class PipelineSummary(BaseModel):
+    n_input: int
+    n_scored: int
+    n_sent: int
+    by_risk_band: Dict[str, int]
+    by_delivery_status: Dict[str, int]
+
+
 class FHIRRequest(BaseModel):
     resource: Dict[str, Any]
     resource_type: str = "Appointment"
@@ -338,6 +346,121 @@ def create_app(database_url: Optional[str] = None) -> FastAPI:
                     "error": r.delivery.error,
                 }
                 for r in recent
+            ],
+        })
+
+    @app.post("/pipeline/score-and-send")
+    def pipeline_score_and_send(
+        file: UploadFile = File(...),
+        channel: str = Form("console"),
+        skip_low_risk: bool = Form(True),
+        send: bool = Form(False),  # False = dry-run only
+        default_clinic: str = Form("your clinic"),
+    ):
+        """End-to-end: upload CSV → score no-show → render/send reminders → persist.
+
+        Required columns:
+            appointment_id, name, phone, appointment_time
+
+        Optional (improve scoring accuracy):
+            age, lead_time_days, prior_no_shows, prior_visits, distance_km,
+            appointment_hour, appointment_dow, specialty, insurance,
+            sms_reminder_sent, doctor, location, clinic
+        """
+        df = pd.read_csv(file.file)
+        required = {"appointment_id", "name", "phone", "appointment_time"}
+        missing = required - set(df.columns)
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Missing required columns: {sorted(missing)}")
+
+        # Augment lead_time_days if absent.
+        if "lead_time_days" not in df.columns:
+            apt_time = pd.to_datetime(df["appointment_time"], errors="coerce")
+            df["lead_time_days"] = (apt_time - pd.Timestamp.utcnow().tz_localize(None)).dt.days.fillna(0).astype(int).clip(lower=0)
+
+        # Ensure a no-show model is loaded.
+        if state.noshow_model is None:
+            state.noshow_model = _train_default_noshow()
+
+        # Score.
+        scores = state.noshow_model.predict(df)
+        score_lookup = {s.appointment_id: s for s in scores}
+
+        # Persist appointments + predictions.
+        with session_scope() as s:
+            repository.ingest_appointment_dataframe(s, df, source="pipeline")
+            for sc in scores:
+                repository.record_prediction(
+                    s, sc.appointment_id, sc.probability, sc.risk_band, top_factors=sc.top_factors,
+                )
+
+        # Build contexts for the dispatcher.
+        if state.dispatcher is None:
+            state.dispatcher = Dispatcher(default_channel=channel)
+        contexts = []
+        for _, row in df.iterrows():
+            ap_id = str(row["appointment_id"])
+            sc = score_lookup.get(ap_id)
+            band = sc.risk_band if sc else "low"
+            contexts.append(AppointmentContext(
+                appointment_id=ap_id,
+                name=str(row["name"]),
+                phone=str(row["phone"]),
+                appointment_time=str(row["appointment_time"]),
+                doctor=str(row["doctor"]) if "doctor" in df.columns and row.get("doctor") else "your doctor",
+                location=str(row["location"]) if "location" in df.columns and row.get("location") else "the clinic",
+                clinic=str(row["clinic"]) if "clinic" in df.columns and row.get("clinic") else default_clinic,
+                risk_band=band,
+            ))
+
+        # Render or send.
+        if send:
+            results = state.dispatcher.send_batch(contexts, channel=channel, skip_low_risk=skip_low_risk)
+            with session_scope() as s:
+                for r in results:
+                    repository.record_delivery(
+                        s,
+                        appointment_external_id=r.appointment_id,
+                        channel=r.delivery.channel,
+                        template_key=r.template_key,
+                        to_address=r.delivery.to,
+                        body=r.rendered_body,
+                        status=r.delivery.status,
+                        provider_id=r.delivery.provider_id,
+                        error=r.delivery.error,
+                    )
+        else:
+            results = state.dispatcher.preview(contexts, channel=channel)
+
+        band_counts: Dict[str, int] = {}
+        status_counts: Dict[str, int] = {}
+        for r in results:
+            band_counts[r.risk_band] = band_counts.get(r.risk_band, 0) + 1
+            status_counts[r.delivery.status] = status_counts.get(r.delivery.status, 0) + 1
+
+        return _clean({
+            "summary": {
+                "n_input": len(df),
+                "n_scored": len(scores),
+                "n_sent": len(results),
+                "by_risk_band": band_counts,
+                "by_delivery_status": status_counts,
+                "mode": "send" if send else "dry-run",
+                "channel": channel,
+            },
+            "results": [
+                {
+                    "appointment_id": r.appointment_id,
+                    "risk_band": r.risk_band,
+                    "probability": score_lookup[r.appointment_id].probability if r.appointment_id in score_lookup else None,
+                    "template_key": r.template_key,
+                    "channel": r.delivery.channel,
+                    "to": r.delivery.to,
+                    "status": r.delivery.status,
+                    "rendered_body": r.rendered_body,
+                    "error": r.delivery.error,
+                }
+                for r in results
             ],
         })
 

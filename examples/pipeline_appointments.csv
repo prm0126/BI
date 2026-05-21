@@ -1,0 +1,9 @@
+appointment_id,name,phone,appointment_time,doctor,location,clinic,specialty,insurance,age,lead_time_days,prior_no_shows,prior_visits,distance_km,appointment_hour,appointment_dow,sms_reminder_sent
+P000001,Jane Doe,+14155550101,2026-05-25 10:15,Dr. Smith,Cardiology OPD-3,Verdan Care,Cardio,A,42,4,3,12,8.5,10,0,0
+P000002,Arjun Patel,+14155550102,2026-05-25 11:00,Dr. Khan,Dermatology OPD-1,Verdan Care,Derm,B,28,4,0,4,3.2,11,0,1
+P000003,Mei Lin,+14155550103,2026-05-25 14:30,Dr. Lopez,General Med,Verdan Care,GP,A,65,4,1,22,2.1,14,0,1
+P000004,Samuel Okoro,+14155550104,2026-05-25 16:00,Dr. Smith,Cardiology OPD-3,Verdan Care,Cardio,self_pay,53,4,5,8,18.7,16,0,0
+P000005,Ana Garcia,+14155550105,2026-05-26 09:00,Dr. Tan,Pediatrics,Verdan Care,Peds,A,7,5,0,3,4.0,9,1,1
+P000006,Liam Walsh,+14155550106,2026-05-26 10:30,Dr. Khan,Dermatology OPD-1,Verdan Care,Derm,C,34,5,2,6,11.3,10,1,0
+P000007,Priya Sharma,+14155550107,2026-05-26 13:15,Dr. Lopez,General Med,Verdan Care,GP,B,49,5,0,15,5.6,13,1,1
+P000008,Marcus Reed,+14155550108,2026-05-27 15:45,Dr. Smith,Cardiology OPD-3,Verdan Care,Cardio,self_pay,71,6,4,18,22.4,15,2,0
