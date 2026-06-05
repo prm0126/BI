@@ -352,6 +352,65 @@ def pipeline_cmd(appointments_csv, channel, send, skip_low, clinic, model_path):
             click.echo(f"  [{r.risk_band:>6}] {r.appointment_id} → {r.delivery.to}  ({r.template_key})")
 
 
+@cli.group("his")
+def his_group():
+    """Pull data from the hospital HIS (Oracle, read-only)."""
+
+
+@his_group.command("pull")
+@click.option("--kind", type=click.Choice(["appointments", "patients", "admissions"]),
+              default="appointments", show_default=True)
+@click.option("--since", "since_str", type=str, default=None,
+              help="ISO date, e.g. 2026-05-01. Defaults: appointments=-7d, admissions=-30d.")
+@click.option("--until", "until_str", type=str, default=None, help="ISO date.")
+@click.option("--config", "config_path", type=click.Path(exists=True), default=None,
+              help="Override HIS_CONFIG_PATH.")
+@click.option("--out", "out_csv", type=click.Path(), default=None,
+              help="Write rows to CSV here (else print head).")
+@click.option("--persist/--no-persist", default=False,
+              help="Persist pulled appointments into the engine DB.")
+def his_pull(kind, since_str, until_str, config_path, out_csv, persist):
+    """Pull rows from the Oracle HIS into the engine."""
+    from datetime import datetime
+    from .connectors import OracleHIS, HISConfig
+    from .db import session_scope, repository
+
+    cfg = HISConfig.load(config_path)
+    since = datetime.fromisoformat(since_str) if since_str else None
+    until = datetime.fromisoformat(until_str) if until_str else None
+
+    with OracleHIS(config=cfg) as his:
+        if kind == "appointments":
+            df = his.fetch_appointments(since=since, until=until)
+        elif kind == "patients":
+            df = his.fetch_patients()
+        else:
+            df = his.fetch_admissions(since=since, until=until)
+
+    click.echo(f"Fetched {len(df)} rows from HIS ({kind}).")
+    if out_csv:
+        df.to_csv(out_csv, index=False)
+        click.secho(f"Wrote {out_csv}", fg="green")
+    else:
+        click.echo(df.head(10).to_string(index=False))
+
+    if persist and kind == "appointments":
+        with session_scope() as s:
+            n = repository.ingest_appointment_dataframe(s, df, source="HIS:Oracle")
+        click.secho(f"Persisted {n} appointment(s) into engine DB", fg="green")
+
+
+@his_group.command("test")
+@click.option("--config", "config_path", type=click.Path(exists=True), default=None)
+def his_test(config_path):
+    """Smoke-test the HIS connection (auth + one trivial SELECT)."""
+    from .connectors import OracleHIS, HISConfig
+    cfg = HISConfig.load(config_path)
+    with OracleHIS(config=cfg) as his:
+        df = his.fetch("SELECT 1 AS ok FROM dual")
+        click.echo(f"Connected. Probe returned: {df.to_dict(orient='records')}")
+
+
 @cli.command("db-init")
 @click.option("--url", default=None, help="Override DATABASE_URL.")
 def db_init_cmd(url):

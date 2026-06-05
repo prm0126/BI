@@ -1,0 +1,64 @@
+# HIS Oracle config — copy to ./his_config.yaml in your project root and
+# fill in the real table/column names from your MLM/MHDB schema.
+#
+# IMPORTANT:
+#   - All queries MUST be read-only (SELECT-only). The engine validates this
+#     and refuses anything else.
+#   - Bind parameters use Oracle's :name syntax (NOT %s or ?).
+#   - Date params come in as Python datetime objects.
+#
+# Once filled in, run:
+#     bi-forecast his pull --kind appointments --since 2026-05-01
+
+queries:
+  # Return upcoming + recent appointments in the window [:since, :until].
+  # Must produce columns matching `column_map.appointments` below.
+  appointments: |
+    SELECT
+      a.APPT_ID            AS appointment_id,
+      a.MRN                AS patient_id,
+      p.FULL_NAME          AS name,
+      p.MOBILE             AS phone,
+      a.APPT_DATETIME      AS appointment_time,
+      a.DOCTOR_NAME        AS doctor,
+      a.DEPARTMENT         AS specialty,
+      a.LOCATION           AS location,
+      a.STATUS             AS status
+    FROM HIS_APPOINTMENTS a
+    LEFT JOIN HIS_PATIENTS p ON a.MRN = p.MRN
+    WHERE a.APPT_DATETIME BETWEEN :since AND :until
+
+  # Return patient demographics for the given MRNs.
+  # Pass `:mrns` as a comma-separated list — see note below if your HIS
+  # needs a different binding style for arrays.
+  patients: |
+    SELECT
+      p.MRN                AS patient_id,
+      p.FULL_NAME          AS name,
+      p.MOBILE             AS phone,
+      p.EMAIL              AS email,
+      p.DOB                AS dob,
+      p.GENDER             AS sex
+    FROM HIS_PATIENTS p
+    -- WHERE p.MRN IN (:mrns)    -- fill in your HIS's array-binding syntax
+
+  # Return admissions/encounters in the window.
+  admissions: |
+    SELECT
+      e.ENCOUNTER_ID       AS external_id,
+      e.MRN                AS patient_id,
+      e.ADMIT_DATETIME     AS event_time,
+      e.DISCHARGE_DATETIME AS end_time,
+      e.WARD               AS location,
+      e.PATIENT_CLASS      AS patient_class,
+      e.STATUS             AS status
+    FROM HIS_ENCOUNTERS e
+    WHERE e.ADMIT_DATETIME BETWEEN :since AND :until
+
+# Map HIS column names (left of `AS` in the SQL above) to the engine's
+# canonical names. The connector renames after the fetch. You can leave
+# this empty if you alias columns directly in SQL (recommended).
+column_map:
+  appointments: {}
+  patients: {}
+  admissions: {}
