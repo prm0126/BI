@@ -8,14 +8,21 @@ Endpoints:
     POST /noshow/retrain      retrain the no-show model on synthetic data
     POST /hooks/hl7           accept HL7 v2 ADT/SIU messages
     POST /hooks/fhir          accept FHIR Bundles / single resources
+    GET  /video/storyboard    default AIRCollab storyboard (editable JSON)
+    GET  /video/prompt        single-shot walkthrough prompt for Higgsfield
+    POST /video/generate      start a walkthrough render (Higgsfield or local)
+    GET  /video/jobs/{id}     poll a render job; /download fetches the MP4
 """
 
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import math
 import os
+import threading
+import uuid
 import pandas as pd
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from ..router import ModelRouter
@@ -103,6 +110,17 @@ class PipelineSummary(BaseModel):
     by_delivery_status: Dict[str, int]
 
 
+class VideoGenerateRequest(BaseModel):
+    provider: str = Field("auto", description="auto | higgsfield | local")
+    model: Optional[str] = Field(None, description="Higgsfield model alias or path (dop, kling, ...)")
+    storyboard: Optional[Dict[str, Any]] = Field(None, description="Storyboard JSON; default = AIRCollab")
+    out_dir: str = Field("videos", description="Directory for the rendered MP4")
+    width: int = 1280
+    height: int = 720
+    fps: int = 24
+    captions: bool = True
+
+
 class FHIRRequest(BaseModel):
     resource: Dict[str, Any]
     resource_type: str = "Appointment"
@@ -115,6 +133,7 @@ class _State:
     model_path: Optional[str] = None
     model_meta: Dict[str, Any] = {}
     dispatcher: Optional[Dispatcher] = None
+    video_jobs: Dict[str, Dict[str, Any]] = {}
 
 
 def _series_to_pandas(points: List[SeriesPoint]) -> pd.Series:
@@ -559,6 +578,73 @@ def create_app(database_url: Optional[str] = None) -> FastAPI:
         if mapper is None:
             raise HTTPException(status_code=400, detail=f"Unsupported resource: {req.resource_type}")
         return _clean({"type": req.resource_type, "row": mapper(res)})
+
+    # ---------- /video endpoints (Higgsfield AI walkthroughs) ----------
+
+    @app.get("/video/storyboard")
+    def video_storyboard():
+        from ..video import aircollab_storyboard
+        return aircollab_storyboard().to_dict()
+
+    @app.get("/video/prompt")
+    def video_prompt():
+        from ..video import aircollab_storyboard
+        from ..video.higgsfield import is_configured
+        sb = aircollab_storyboard()
+        return {"storyboard": sb.name, "higgsfield_configured": is_configured(), "prompt": sb.walkthrough_prompt()}
+
+    @app.post("/video/generate")
+    def video_generate(req: VideoGenerateRequest):
+        from ..video import Storyboard, aircollab_storyboard, generate_walkthrough, choose_provider
+        try:
+            provider = choose_provider(req.provider)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        sb = Storyboard.from_dict(req.storyboard) if req.storyboard else aircollab_storyboard()
+        job_id = uuid.uuid4().hex[:12]
+        out_dir = os.path.abspath(req.out_dir)
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, f"{sb.name}-{job_id}.mp4")
+        job: Dict[str, Any] = {
+            "id": job_id, "status": "running", "provider": provider, "storyboard": sb.name,
+            "scenes": len(sb.scenes), "duration_s": sb.total_duration, "path": out_path,
+            "progress": [], "error": None, "started_at": datetime.utcnow().isoformat(),
+        }
+        state.video_jobs[job_id] = job
+
+        def _run():
+            try:
+                result = generate_walkthrough(
+                    sb, out_path, provider=provider, model=req.model, size=(req.width, req.height),
+                    fps=req.fps, captions=req.captions, on_progress=lambda m: job["progress"].append(m),
+                )
+                job.update(status="completed", path=str(result.path), jobs=result.jobs,
+                           finished_at=datetime.utcnow().isoformat())
+            except Exception as e:  # surface any failure to the poller
+                job.update(status="failed", error=str(e), finished_at=datetime.utcnow().isoformat())
+
+        threading.Thread(target=_run, name=f"video-{job_id}", daemon=True).start()
+        return {"job_id": job_id, "status": "running", "provider": provider, "path": out_path}
+
+    @app.get("/video/jobs")
+    def video_jobs():
+        return {"n": len(state.video_jobs), "items": list(state.video_jobs.values())}
+
+    @app.get("/video/jobs/{job_id}")
+    def video_job(job_id: str):
+        job = state.video_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"Unknown video job: {job_id}")
+        return job
+
+    @app.get("/video/jobs/{job_id}/download")
+    def video_job_download(job_id: str):
+        job = state.video_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"Unknown video job: {job_id}")
+        if job["status"] != "completed":
+            raise HTTPException(status_code=409, detail=f"Job is {job['status']}")
+        return FileResponse(job["path"], media_type="video/mp4", filename=os.path.basename(job["path"]))
 
     return app
 

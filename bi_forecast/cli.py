@@ -434,5 +434,101 @@ def serve_cmd(host, port, reload):
     uvicorn.run("bi_forecast.api.app:app", host=host, port=port, reload=reload)
 
 
+@cli.group("video")
+def video_group():
+    """AI walkthrough videos from website screenshots (Higgsfield or local render)."""
+
+
+@video_group.command("prompt")
+@click.option("--storyboard", "sb_path", type=click.Path(exists=True), default=None,
+              help="Storyboard JSON (defaults to the built-in AIRCollab walkthrough).")
+@click.option("--out", "out_path", type=click.Path(), default=None, help="Write the prompt to this file.")
+def video_prompt(sb_path, out_path):
+    """Print the detailed, single-shot generation prompt for the whole walkthrough."""
+    from .video import load_storyboard
+    text = load_storyboard(sb_path).walkthrough_prompt()
+    if out_path:
+        Path(out_path).write_text(text + "\n")
+        click.secho(f"Prompt written to {out_path}", fg="green")
+    else:
+        click.echo(text)
+
+
+@video_group.command("storyboard")
+@click.option("--out", "out_path", type=click.Path(), default="storyboard.json", show_default=True)
+def video_storyboard(out_path):
+    """Export the built-in AIRCollab storyboard as JSON so you can edit scenes/screenshots."""
+    from .video import aircollab_storyboard
+    sb = aircollab_storyboard()
+    sb.to_json(Path(out_path))
+    click.secho(f"{len(sb.scenes)} scenes ({sb.total_duration}s) written to {out_path}", fg="green")
+    for i, s in enumerate(sb.scenes, 1):
+        click.echo(f"  {i:2d}. {s.title:32s} {s.duration}s  {s.image or '-'}")
+
+
+@video_group.command("screenshot")
+@click.argument("url")
+@click.option("--out", "out_path", type=click.Path(), required=True, help="PNG path to write.")
+@click.option("--width", default=1440, show_default=True, type=int)
+@click.option("--height", default=900, show_default=True, type=int)
+@click.option("--full-page/--viewport", default=False)
+@click.option("--wait-ms", default=1500, show_default=True, type=int)
+@click.option("--wait-for", default=None, help="CSS selector to wait for before capturing.")
+@click.option("--storage-state", type=click.Path(exists=True), default=None,
+              help="Playwright storage-state JSON for pages behind a login.")
+def video_screenshot(url, out_path, width, height, full_page, wait_ms, wait_for, storage_state):
+    """Capture a screenshot of a web page with headless Chromium."""
+    from .video.screenshot import capture_screenshot, ScreenshotError
+    try:
+        p = capture_screenshot(url, out_path, viewport=(width, height), full_page=full_page,
+                               wait_ms=wait_ms, wait_for_selector=wait_for, storage_state=storage_state)
+    except ScreenshotError as e:
+        click.secho(str(e), fg="red")
+        sys.exit(1)
+    click.secho(f"Screenshot saved to {p}", fg="green")
+
+
+@video_group.command("generate")
+@click.option("--storyboard", "sb_path", type=click.Path(exists=True), default=None,
+              help="Storyboard JSON (defaults to the built-in AIRCollab walkthrough).")
+@click.option("--out", "out_path", type=click.Path(), default="aircollab_walkthrough.mp4", show_default=True)
+@click.option("--provider", type=click.Choice(["auto", "higgsfield", "local"]), default="auto", show_default=True,
+              help="auto = Higgsfield when HIGGSFIELD_API_KEY/SECRET are set, else local render.")
+@click.option("--model", default=None, help="Higgsfield model alias (dop, kling, kling-standard) or full path.")
+@click.option("--workdir", type=click.Path(), default=None, help="Where per-scene clips are kept (Higgsfield).")
+@click.option("--size", default="1280x720", show_default=True, help="Output WxH.")
+@click.option("--fps", default=24, show_default=True, type=int)
+@click.option("--captions/--no-captions", default=True, help="Overlay title + narration (local render).")
+@click.option("--poll-interval", default=3.0, show_default=True, type=float)
+@click.option("--job-timeout", default=900.0, show_default=True, type=float)
+def video_generate(sb_path, out_path, provider, model, workdir, size, fps, captions, poll_interval, job_timeout):
+    """Generate the walkthrough video from the storyboard's screenshots."""
+    from .video import load_storyboard, generate_walkthrough, choose_provider
+    from .video.higgsfield import HiggsfieldError
+    from .video.render import RenderError
+    try:
+        w, h = (int(v) for v in size.lower().split("x"))
+    except ValueError:
+        click.secho("--size must look like 1280x720", fg="red")
+        sys.exit(2)
+
+    sb = load_storyboard(sb_path)
+    chosen = choose_provider(provider)
+    if provider == "auto" and chosen == "local":
+        click.secho("HIGGSFIELD_API_KEY/HIGGSFIELD_API_SECRET not set: rendering locally (no AI).", fg="yellow")
+    click.echo(f"Storyboard: {sb.name}  scenes={len(sb.scenes)}  duration={sb.total_duration}s  provider={chosen}")
+    try:
+        result = generate_walkthrough(
+            sb, out_path, provider=chosen, model=model, workdir=workdir, size=(w, h), fps=fps,
+            captions=captions, poll_interval=poll_interval, job_timeout=job_timeout, on_progress=click.echo,
+        )
+    except (HiggsfieldError, RenderError) as e:
+        click.secho(f"Video generation failed: {e}", fg="red")
+        sys.exit(1)
+    click.secho(f"\nVideo written to {result.path}  (provider={result.provider})", fg="green")
+    if result.jobs:
+        click.echo("Higgsfield request ids: " + ", ".join(result.jobs))
+
+
 if __name__ == "__main__":
     cli()

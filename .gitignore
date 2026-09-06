@@ -13,3 +13,10 @@ htmlcov/
 *.csv
 !examples/*.csv
 bi_forecast.db
+# video outputs
+*.mp4
+*.webm
+videos/
+*_clips/
+storyboard.json
+!examples/aircollab/storyboard.json
