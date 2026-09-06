@@ -31,6 +31,10 @@ bi-forecast video generate --provider higgsfield --model dop --out aircollab_wal
 # 2. No credentials: local Ken Burns render straight from the screenshots
 bi-forecast video generate --provider local --out aircollab_walkthrough.mp4
 
+# Voice-over: neural Piper voice (one-time download, ~60 MB) or espeak-ng fallback
+bi-forecast video voice-download          # or: apt-get install espeak-ng
+bi-forecast video generate --tts piper    # --no-voice for a silent render
+
 # Print / edit the storyboard and the long-form prompt
 bi-forecast video storyboard --out storyboard.json
 bi-forecast video prompt
@@ -43,6 +47,10 @@ bi-forecast video screenshot https://app.airnd.ai --out shots/landing.png
 The Equipment scene has no screenshot yet, so it reuses the dashboard
 screenshot and zooms into the matching sidebar item. Drop a screenshot of that
 page into `screenshots/` and point the scene's `image` at it in `storyboard.json`.
+
+Every scene's `narration` text is spoken over the video and captioned; a scene
+is stretched (Higgsfield clips hold their last frame) until its voice-over ends.
+`--speech-rate 1.15` speaks faster, `--piper-voice path.onnx` swaps the voice.
 
 The same flow is exposed by the API: `GET /video/prompt`, `GET /video/storyboard`,
 `POST /video/generate`, `GET /video/jobs/{id}`, `GET /video/jobs/{id}/download`.

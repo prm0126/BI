@@ -16,12 +16,15 @@ from __future__ import annotations
 
 import glob
 import os
+import re
+import tempfile
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple
 
 from .storyboard import Scene, Storyboard
+from . import tts
 
 Size = Tuple[int, int]
 
@@ -79,6 +82,17 @@ def _video_codec_args(exe: str, out_path: Path) -> List[str]:
     if out_path.suffix.lower() == ".webm" or not _has_encoder(exe, "libx264"):
         return ["-c:v", "libvpx", "-b:v", "2M", "-pix_fmt", "yuv420p"]
     return ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+
+
+def media_duration(path: os.PathLike) -> float:
+    """Duration in seconds, parsed from ffmpeg's banner (no ffprobe needed)."""
+    exe = _require_ffmpeg()
+    res = subprocess.run([exe, "-hide_banner", "-i", str(path)], capture_output=True, text=True)
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", res.stderr)
+    if not m:
+        raise RenderError(f"could not read duration of {path}")
+    h, mi, sec = m.groups()
+    return int(h) * 3600 + int(mi) * 60 + float(sec)
 
 
 def _load_font(size: int):
@@ -163,7 +177,8 @@ def _card_overlay(size: Size, text: str):
 
 
 def iter_scene_frames(
-    scene: Scene, size: Size, fps: int, index: int = 1, total: int = 1, captions: bool = True
+    scene: Scene, size: Size, fps: int, index: int = 1, total: int = 1, captions: bool = True,
+    duration: Optional[float] = None,
 ) -> Iterable[bytes]:
     """Yield raw RGB frames for one scene (Ken Burns + captions + fades)."""
     from PIL import Image
@@ -177,9 +192,10 @@ def iter_scene_frames(
     if src.width > max_w:
         src = src.resize((max_w, int(src.height * max_w / src.width)), Image.LANCZOS)
 
-    n = max(1, int(round(scene.duration * fps)))
+    seconds = duration if duration is not None else scene.duration
+    n = max(1, int(round(seconds * fps)))
     fade = min(int(fps * 0.4), n // 3)
-    card_frames = int(fps * min(2.0, scene.duration * 0.4)) if scene.card else 0
+    card_frames = int(fps * min(2.0, seconds * 0.4)) if scene.card else 0
     caption = _caption_overlay(size, scene, index, total) if captions else None
     card = _card_overlay(size, scene.card) if scene.card else None
     a, b = scene.start, scene.end
@@ -209,13 +225,23 @@ def _scaled_alpha(overlay, alpha: float):
     return Image.merge("RGBA", (r, g, b, a))
 
 
-def _open_encoder(exe: str, size: Size, fps: int, out_path: Path) -> subprocess.Popen:
+def _audio_args(exe: str, out_path: Path, audio: Optional[Path]) -> List[str]:
+    if audio is None:
+        return ["-an"]
+    if out_path.suffix.lower() == ".webm" or not _has_encoder(exe, "aac"):
+        return ["-c:a", "libvorbis" if _has_encoder(exe, "libvorbis") else "libopus", "-b:a", "96k"]
+    return ["-c:a", "aac", "-b:a", "128k"]
+
+
+def _open_encoder(exe: str, size: Size, fps: int, out_path: Path, audio: Optional[Path] = None) -> subprocess.Popen:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         exe, "-y", "-hide_banner", "-loglevel", "error",
         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{size[0]}x{size[1]}", "-r", str(fps), "-i", "-",
-        *_video_codec_args(exe, out_path), "-an", str(out_path),
     ]
+    if audio is not None:
+        cmd += ["-i", str(audio), "-map", "0:v:0", "-map", "1:a:0", "-shortest"]
+    cmd += [*_video_codec_args(exe, out_path), *_audio_args(exe, out_path, audio), str(out_path)]
     return subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
@@ -227,13 +253,46 @@ def _finish_encoder(proc: subprocess.Popen, out_path: Path) -> Path:
     return out_path
 
 
+NARRATION_TAIL = 0.8  # seconds of breathing room after the voice-over ends
+
+
+def plan_narration(
+    scenes: Sequence[Scene], workdir: Path, engine: str = "auto", voice: Optional[str] = None,
+    rate: float = 1.0, min_durations: Optional[Sequence[float]] = None,
+) -> Tuple[List[float], Optional[Path], str]:
+    """Synthesise each scene's narration and decide how long every scene runs.
+
+    Returns (durations, track_wav_or_None, engine_used). A scene lasts at least
+    its storyboard duration (or ``min_durations[i]``) and at least as long as
+    its voice-over plus a short tail.
+    """
+    chosen = tts.choose_engine(engine, voice)
+    floors = [max(float(sc.duration), float(min_durations[i]) if min_durations else 0.0)
+              for i, sc in enumerate(scenes)]
+    if chosen == "none":
+        return floors, None, "none"
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    segments = []
+    durations = []
+    for i, (sc, floor) in enumerate(zip(scenes, floors), 1):
+        wav = workdir / f"narration_{i:02d}_{sc.key}.wav"
+        n = tts.synthesize(sc.narration, wav, engine=chosen, voice=voice, rate=rate)
+        d = max(floor, n.seconds + NARRATION_TAIL + 0.35)
+        durations.append(d)
+        segments.append((wav, d))
+    track = tts.build_track(segments, workdir / "narration_track.wav")
+    return durations, track, chosen
+
+
 def render_scene(scene: Scene, out_path: os.PathLike, size: Size = (1280, 720), fps: int = 24,
-                 index: int = 1, total: int = 1, captions: bool = True) -> Path:
+                 index: int = 1, total: int = 1, captions: bool = True,
+                 duration: Optional[float] = None, audio: Optional[os.PathLike] = None) -> Path:
     """Render one scene to its own clip."""
     exe = _require_ffmpeg()
     out_path = Path(out_path)
-    proc = _open_encoder(exe, size, fps, out_path)
-    for frame in iter_scene_frames(scene, size, fps, index, total, captions):
+    proc = _open_encoder(exe, size, fps, out_path, audio=Path(audio) if audio else None)
+    for frame in iter_scene_frames(scene, size, fps, index, total, captions, duration=duration):
         proc.stdin.write(frame)
     return _finish_encoder(proc, out_path)
 
@@ -245,25 +304,48 @@ def render_storyboard(
     fps: int = 24,
     captions: bool = True,
     on_progress: Optional[Callable[[int, int, Scene], None]] = None,
+    narration: str = "none",
+    voice: Optional[str] = None,
+    speech_rate: float = 1.0,
+    workdir: Optional[os.PathLike] = None,
 ) -> Path:
-    """Render the whole storyboard to a single video file."""
+    """Render the whole storyboard to a single video file.
+
+    ``narration`` is a TTS engine name ("auto", "piper", "espeak") or "none".
+    With narration on, each scene is stretched to fit its voice-over.
+    """
     exe = _require_ffmpeg()
     missing = storyboard.missing_images()
     if missing:
         raise RenderError("missing screenshots: " + ", ".join(f"{s.key} -> {s.image}" for s in missing))
     out_path = Path(out_path)
-    proc = _open_encoder(exe, size, fps, out_path)
-    total = len(storyboard.scenes)
-    for i, scene in enumerate(storyboard.scenes, 1):
-        if on_progress:
-            on_progress(i, total, scene)
-        for frame in iter_scene_frames(scene, size, fps, i, total, captions):
-            proc.stdin.write(frame)
-    return _finish_encoder(proc, out_path)
+    tmp = None
+    if workdir is None:
+        tmp = tempfile.TemporaryDirectory(prefix="bi-video-")
+        workdir = tmp.name
+    try:
+        durations, track, _ = plan_narration(storyboard.scenes, Path(workdir), engine=narration,
+                                             voice=voice, rate=speech_rate)
+        proc = _open_encoder(exe, size, fps, out_path, audio=track)
+        total = len(storyboard.scenes)
+        for i, (scene, d) in enumerate(zip(storyboard.scenes, durations), 1):
+            if on_progress:
+                on_progress(i, total, scene)
+            for frame in iter_scene_frames(scene, size, fps, i, total, captions, duration=d):
+                proc.stdin.write(frame)
+        return _finish_encoder(proc, out_path)
+    finally:
+        if tmp is not None:
+            tmp.cleanup()
 
 
-def concat_clips(clips: Sequence[os.PathLike], out_path: os.PathLike, size: Size = (1280, 720), fps: int = 24) -> Path:
-    """Concatenate clips of any size/codec into one file (re-encodes)."""
+def concat_clips(clips: Sequence[os.PathLike], out_path: os.PathLike, size: Size = (1280, 720), fps: int = 24,
+                 min_durations: Optional[Sequence[float]] = None, audio: Optional[os.PathLike] = None) -> Path:
+    """Concatenate clips of any size/codec into one file (re-encodes).
+
+    ``min_durations[i]`` freezes the last frame of clip ``i`` until it reaches
+    that length (so a voice-over fits); ``audio`` is muxed as the soundtrack.
+    """
     exe = _require_ffmpeg()
     clips = [Path(c) for c in clips]
     if not clips:
@@ -275,15 +357,25 @@ def concat_clips(clips: Sequence[os.PathLike], out_path: os.PathLike, size: Size
     filters: List[str] = []
     for i, c in enumerate(clips):
         inputs += ["-i", str(c)]
+        pad = ""
+        if min_durations is not None:
+            extra = float(min_durations[i]) - media_duration(c)
+            if extra > 0.05:
+                pad = f",tpad=stop_mode=clone:stop_duration={extra:.3f}"
         filters.append(
             f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
-            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p[v{i}]"
+            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p{pad}[v{i}]"
         )
     chain = "".join(f"[v{i}]" for i in range(len(clips)))
     filters.append(f"{chain}concat=n={len(clips)}:v=1:a=0[v]")
+    maps = ["-map", "[v]"]
+    if audio is not None:
+        inputs += ["-i", str(audio)]
+        maps += ["-map", f"{len(clips)}:a:0", "-shortest"]
     cmd = [exe, "-y", "-hide_banner", "-loglevel", "error", *inputs,
-           "-filter_complex", ";".join(filters), "-map", "[v]",
-           *_video_codec_args(exe, out_path), "-an", str(out_path)]
+           "-filter_complex", ";".join(filters), *maps,
+           *_video_codec_args(exe, out_path), *_audio_args(exe, out_path, Path(audio) if audio else None),
+           str(out_path)]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
         raise RenderError(f"ffmpeg concat failed: {res.stderr.strip()[:500]}")

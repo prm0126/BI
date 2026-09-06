@@ -501,11 +501,18 @@ def video_screenshot(url, out_path, width, height, full_page, wait_ms, wait_for,
 @click.option("--captions/--no-captions", default=True, help="Overlay title + narration (local render).")
 @click.option("--poll-interval", default=3.0, show_default=True, type=float)
 @click.option("--job-timeout", default=900.0, show_default=True, type=float)
-def video_generate(sb_path, out_path, provider, model, workdir, size, fps, captions, poll_interval, job_timeout):
+@click.option("--voice/--no-voice", "voice_on", default=True, help="Add a spoken voice-over track.")
+@click.option("--tts", "tts_engine", type=click.Choice(["auto", "piper", "espeak"]), default="auto",
+              show_default=True, help="Text-to-speech engine for the voice-over.")
+@click.option("--piper-voice", type=click.Path(exists=True), default=None, help="Piper .onnx voice file.")
+@click.option("--speech-rate", default=1.0, show_default=True, type=float, help="1.0 = normal, 1.2 = faster.")
+def video_generate(sb_path, out_path, provider, model, workdir, size, fps, captions, poll_interval, job_timeout,
+                   voice_on, tts_engine, piper_voice, speech_rate):
     """Generate the walkthrough video from the storyboard's screenshots."""
     from .video import load_storyboard, generate_walkthrough, choose_provider
     from .video.higgsfield import HiggsfieldError
     from .video.render import RenderError
+    from .video.tts import TTSError
     try:
         w, h = (int(v) for v in size.lower().split("x"))
     except ValueError:
@@ -521,13 +528,29 @@ def video_generate(sb_path, out_path, provider, model, workdir, size, fps, capti
         result = generate_walkthrough(
             sb, out_path, provider=chosen, model=model, workdir=workdir, size=(w, h), fps=fps,
             captions=captions, poll_interval=poll_interval, job_timeout=job_timeout, on_progress=click.echo,
+            narration=tts_engine if voice_on else "none", voice=piper_voice, speech_rate=speech_rate,
         )
-    except (HiggsfieldError, RenderError) as e:
+    except (HiggsfieldError, RenderError, TTSError) as e:
         click.secho(f"Video generation failed: {e}", fg="red")
         sys.exit(1)
-    click.secho(f"\nVideo written to {result.path}  (provider={result.provider})", fg="green")
+    click.secho(f"\nVideo written to {result.path}  (provider={result.provider}, voice={result.narration})", fg="green")
     if result.jobs:
         click.echo("Higgsfield request ids: " + ", ".join(result.jobs))
+
+
+@video_group.command("voice-download")
+@click.option("--name", default="en-us-lessac-medium", show_default=True, help="Piper voice name.")
+@click.option("--dest", type=click.Path(), default=None, help="Folder for the .onnx (default ~/.local/share/bi-forecast/piper).")
+def video_voice_download(name, dest):
+    """Download a Piper neural voice for the walkthrough voice-over."""
+    from .video.tts import download_piper_voice, TTSError, available_engines
+    try:
+        path = download_piper_voice(name, dest)
+    except TTSError as e:
+        click.secho(str(e), fg="red")
+        sys.exit(1)
+    click.secho(f"Voice ready: {path}", fg="green")
+    click.echo("TTS engines available now: " + ", ".join(available_engines()))
 
 
 if __name__ == "__main__":

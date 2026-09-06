@@ -119,6 +119,9 @@ class VideoGenerateRequest(BaseModel):
     height: int = 720
     fps: int = 24
     captions: bool = True
+    narration: str = Field("auto", description="Voice-over engine: auto | piper | espeak | none")
+    voice: Optional[str] = Field(None, description="Piper .onnx voice path (optional)")
+    speech_rate: float = 1.0
 
 
 class FHIRRequest(BaseModel):
@@ -590,8 +593,10 @@ def create_app(database_url: Optional[str] = None) -> FastAPI:
     def video_prompt():
         from ..video import aircollab_storyboard
         from ..video.higgsfield import is_configured
+        from ..video.tts import available_engines
         sb = aircollab_storyboard()
-        return {"storyboard": sb.name, "higgsfield_configured": is_configured(), "prompt": sb.walkthrough_prompt()}
+        return {"storyboard": sb.name, "higgsfield_configured": is_configured(),
+                "tts_engines": available_engines(), "prompt": sb.walkthrough_prompt()}
 
     @app.post("/video/generate")
     def video_generate(req: VideoGenerateRequest):
@@ -617,9 +622,10 @@ def create_app(database_url: Optional[str] = None) -> FastAPI:
                 result = generate_walkthrough(
                     sb, out_path, provider=provider, model=req.model, size=(req.width, req.height),
                     fps=req.fps, captions=req.captions, on_progress=lambda m: job["progress"].append(m),
+                    narration=req.narration, voice=req.voice, speech_rate=req.speech_rate,
                 )
                 job.update(status="completed", path=str(result.path), jobs=result.jobs,
-                           finished_at=datetime.utcnow().isoformat())
+                           narration=result.narration, finished_at=datetime.utcnow().isoformat())
             except Exception as e:  # surface any failure to the poller
                 job.update(status="failed", error=str(e), finished_at=datetime.utcnow().isoformat())
 

@@ -250,3 +250,81 @@ def test_video_api_roundtrip(tmp_path, tiny_storyboard):
     assert dl.status_code == 200 and dl.headers["content-type"] == "video/mp4" and len(dl.content) > 1000
     assert client.get("/video/jobs/nope").status_code == 404
     assert client.post("/video/generate", json={"provider": "bogus"}).status_code == 400
+
+
+# ---------------------------------------------------------------- narration (TTS)
+
+from bi_forecast.video import tts as tts_mod  # noqa: E402
+
+needs_tts = pytest.mark.skipif(tts_mod.available_engines() == ["none"], reason="no TTS engine (piper/espeak) available")
+
+
+def test_choose_engine_none_and_invalid():
+    assert tts_mod.choose_engine("none") == "none"
+    with pytest.raises(tts_mod.TTSError):
+        tts_mod.choose_engine("bogus")
+
+
+def test_synthesize_none_writes_empty_wav(tmp_path):
+    n = tts_mod.synthesize("hello", tmp_path / "n.wav", engine="none")
+    assert n.engine == "none" and n.seconds == 0.0 and n.path.exists()
+
+
+def test_build_track_pads_each_slot(tmp_path):
+    import numpy as np
+    import wave
+    # A 0.5s tone at 8 kHz placed in a 2s slot, followed by a silent 1s slot.
+    rate = 8000
+    tone = (np.sin(np.linspace(0, 2 * np.pi * 440 * 0.5, rate // 2)) * 10000).astype("<i2")
+    src = tmp_path / "tone.wav"
+    with wave.open(str(src), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(tone.tobytes())
+    out = tts_mod.build_track([(src, 2.0), (None, 1.0)], tmp_path / "track.wav", sample_rate=22050)
+    assert abs(tts_mod.wav_seconds(out) - 3.0) < 0.01
+    data, r = tts_mod._read_mono_pcm16(out)
+    assert r == 22050
+    assert np.abs(data[int(0.4 * r):int(0.8 * r)]).max() > 1000   # tone present after lead-in
+    assert np.abs(data[int(2.0 * r):]).max() == 0                  # second slot silent
+
+
+@needs_tts
+def test_synthesize_speech_has_duration(tmp_path):
+    n = tts_mod.synthesize("Welcome to AIRCollab. Please login first.", tmp_path / "v.wav")
+    assert n.engine in ("piper", "espeak") and 1.0 < n.seconds < 10.0
+
+
+@needs_ffmpeg
+@needs_tts
+def test_render_with_narration_has_audio_and_stretches(tmp_path, tiny_storyboard):
+    from bi_forecast.video.render import media_duration
+    from bi_forecast.video import higgsfield as _hf  # noqa: F401
+    import subprocess
+    tiny_storyboard.scenes[0].narration = (
+        "Welcome to AIRCollab, the platform that connects researchers worldwide for real time "
+        "communication, document sharing, virtual meetings and project management."
+    )
+    out = render_storyboard(tiny_storyboard, tmp_path / "voiced.mp4", size=(320, 180), fps=8,
+                            narration="auto", workdir=tmp_path / "work")
+    banner = subprocess.run([find_ffmpeg(), "-hide_banner", "-i", str(out)], capture_output=True, text=True).stderr
+    assert "Audio:" in banner
+    assert media_duration(out) > 2.0 + 3.0   # storyboard floor was 2s; voice-over stretched scene 1
+    assert (tmp_path / "work" / "narration_track.wav").exists()
+
+
+@needs_ffmpeg
+@needs_tts
+def test_concat_pads_clips_to_narration(tmp_path, tiny_storyboard):
+    from bi_forecast.video.render import media_duration, plan_narration
+    clips = [render_scene(s, tmp_path / f"{i}.mp4", size=(256, 144), fps=8) for i, s in enumerate(tiny_storyboard.scenes)]
+    durations, track, engine = plan_narration(tiny_storyboard.scenes, tmp_path / "w", engine="auto",
+                                              min_durations=[media_duration(c) for c in clips])
+    assert engine != "none" and track is not None and all(d >= 1.0 for d in durations)
+    out = concat_clips(clips, tmp_path / "all.mp4", size=(320, 180), fps=8, min_durations=durations, audio=track)
+    assert abs(media_duration(out) - sum(durations)) < 0.6
+
+
+@needs_ffmpeg
+def test_generate_walkthrough_silent_when_requested(tmp_path, tiny_storyboard):
+    r = generate_walkthrough(tiny_storyboard, tmp_path / "s.mp4", provider="local", size=(320, 180), fps=8,
+                             narration="none")
+    assert r.narration == "none" and r.path.exists()
