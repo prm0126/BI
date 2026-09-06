@@ -121,20 +121,20 @@
     {
       "key": "saved",
       "title": "Saved collaborators",
-      "narration": "Saved Collaborators keeps every researcher you shortlisted one click away.",
-      "motion": "Start on the full dashboard, then push in on the left sidebar and highlight the 'Saved collaborators' menu item as the cursor moves over it and clicks.",
-      "image": "examples/aircollab/screenshots/03_dashboard.png",
+      "narration": "Saved Collaborators keeps every researcher you shortlisted one click away, with Saved and Contacted tabs, search, and the same message and profile actions.",
+      "motion": "Push in from the full Saved Collaborators page to the single saved researcher row; the cursor hovers the filled blue heart, then the message icon.",
+      "image": "examples/aircollab/screenshots/06_saved.png",
       "card": null,
       "duration": 5,
       "start": [
         0.5,
-        0.45,
+        0.4,
         1.0
       ],
       "end": [
-        0.2,
-        0.187,
-        0.42
+        0.5,
+        0.28,
+        0.75
       ]
     },
     {
@@ -159,77 +159,77 @@
     {
       "key": "data_center",
       "title": "Data Center",
-      "narration": "The Data Center is the secure workspace for file sharing, metadata tracking and document management across your collaboration.",
-      "motion": "Start on the full dashboard, then push in on the left sidebar and highlight the 'Data Center' menu item as the cursor moves over it and clicks.",
-      "image": "examples/aircollab/screenshots/03_dashboard.png",
+      "narration": "The Data Center is the secure workspace for file sharing, metadata tracking and document management: upload a file and track its format, uploader, date and status.",
+      "motion": "Pan from the Data Center header across the search and type filters to the blue 'Upload a File' button; the cursor clicks it and the empty file table waits below.",
+      "image": "examples/aircollab/screenshots/08_data_center.png",
       "card": null,
       "duration": 5,
       "start": [
         0.5,
-        0.45,
+        0.35,
         1.0
       ],
       "end": [
-        0.2,
-        0.367,
-        0.42
+        0.4,
+        0.22,
+        0.6
       ]
     },
     {
       "key": "chat",
       "title": "Real-time chat",
-      "narration": "Chat keeps the conversation going in real time with every collaborator on the project.",
-      "motion": "Start on the full dashboard, then push in on the left sidebar and highlight the 'Real-time chat' menu item as the cursor moves over it and clicks.",
-      "image": "examples/aircollab/screenshots/03_dashboard.png",
+      "narration": "Chat keeps the conversation going in real time with every collaborator, organised into In Progress, Upcoming, Requests and History, with voice calls one tap away.",
+      "motion": "Start on the conversation list, then drift right to the message thread with Prajith Nair as new blue message bubbles slide in; the cursor rests on the Enter Message box.",
+      "image": "examples/aircollab/screenshots/07_chat.png",
       "card": null,
-      "duration": 5,
+      "duration": 6,
       "start": [
         0.5,
-        0.45,
+        0.35,
         1.0
       ],
       "end": [
-        0.2,
-        0.326,
-        0.42
+        0.66,
+        0.35,
+        0.7
       ]
     },
     {
       "key": "shipment",
       "title": "Shipment assistant",
-      "narration": "Supporting services start with Shipment: an AI assistant for logistics and shipping of samples and materials between labs.",
-      "motion": "Start on the full dashboard, then push in on the left sidebar and highlight the 'Shipment assistant' menu item as the cursor moves over it and clicks.",
-      "image": "examples/aircollab/screenshots/03_dashboard.png",
+      "narration": "Supporting services start with Shipment: an AI assistant for logistics. Ask how to ship blood sample slides to the UAE and it walks through packaging, documentation, courier, temperature control and customs.",
+      "motion": "Push in on the Shipment chat: the AI greeting, the user's question on the right, then the assistant's step-by-step answer scrolling up from below.",
+      "image": "examples/aircollab/screenshots/09_shipment.png",
       "card": null,
-      "duration": 5,
+      "duration": 6,
       "start": [
         0.5,
-        0.45,
+        0.3,
         1.0
       ],
       "end": [
-        0.2,
-        0.466,
-        0.42
+        0.45,
+        0.28,
+        0.65
       ]
     },
     {
       "key": "quotation",
       "title": "Pricing and quotations",
-      "narration": "Quotation produces pricing and quotations for services and materials in a few clicks.",
-      "motion": "Start on the full dashboard, then push in on the left sidebar and highlight the 'Pricing and quotations' menu item as the cursor moves over it and clicks.",
-      "image": "examples/aircollab/screenshots/03_dashboard.png",
+      "narration": "Quotation is a second AI assistant for pricing, estimates and quotation requests for services and materials, answered in a few clicks.",
+      "motion": "Push in on the Quotation assistant's greeting bubble while the 'Quotation' sidebar item stays highlighted; the cursor moves to the Enter Message box.",
+      "image": "examples/aircollab/screenshots/10_quotation.png",
       "card": null,
       "duration": 5,
       "start": [
         0.5,
-        0.45,
+        0.35,
         1.0
       ],
       "end": [
+        0.35,
         0.2,
-        0.507,
-        0.42
+        0.55
       ]
     },
     {

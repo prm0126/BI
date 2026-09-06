@@ -149,6 +149,11 @@ LOGIN = f"{_SHOTS}/02_login.png"
 DASHBOARD = f"{_SHOTS}/03_dashboard.png"
 DISCOVER = f"{_SHOTS}/04_discover.png"
 DISCOVER_RESULTS = f"{_SHOTS}/05_discover_results.png"
+SAVED = f"{_SHOTS}/06_saved.png"
+CHAT = f"{_SHOTS}/07_chat.png"
+DATA_CENTER = f"{_SHOTS}/08_data_center.png"
+SHIPMENT = f"{_SHOTS}/09_shipment.png"
+QUOTATION = f"{_SHOTS}/10_quotation.png"
 
 AIRCOLLAB_STYLE = (
     "Style: clean, modern SaaS screen-recording look, 16:9, bright white and blue palette matching "
@@ -270,9 +275,20 @@ def aircollab_storyboard() -> Storyboard:
             start=(0.45, 0.45, 0.75),
             end=(0.65, 0.62, 0.55),
         ),
-        _sidebar_scene(
-            "saved", "Saved collaborators",
-            "Saved Collaborators keeps every researcher you shortlisted one click away.", 0.187,
+        Scene(
+            key="saved",
+            title="Saved collaborators",
+            narration=(
+                "Saved Collaborators keeps every researcher you shortlisted one click away, with Saved and "
+                "Contacted tabs, search, and the same message and profile actions."
+            ),
+            motion=(
+                "Push in from the full Saved Collaborators page to the single saved researcher row; the cursor "
+                "hovers the filled blue heart, then the message icon."
+            ),
+            image=SAVED,
+            start=(0.5, 0.4, 1.0),
+            end=(0.5, 0.28, 0.75),
         ),
         Scene(
             key="collaboration",
@@ -289,23 +305,68 @@ def aircollab_storyboard() -> Storyboard:
             start=(0.2, 0.285, 0.42),
             end=(0.43, 0.6, 0.65),
         ),
-        _sidebar_scene(
-            "data_center", "Data Center",
-            "The Data Center is the secure workspace for file sharing, metadata tracking and document "
-            "management across your collaboration.", 0.367,
+        Scene(
+            key="data_center",
+            title="Data Center",
+            narration=(
+                "The Data Center is the secure workspace for file sharing, metadata tracking and document "
+                "management: upload a file and track its format, uploader, date and status."
+            ),
+            motion=(
+                "Pan from the Data Center header across the search and type filters to the blue 'Upload a File' "
+                "button; the cursor clicks it and the empty file table waits below."
+            ),
+            image=DATA_CENTER,
+            start=(0.5, 0.35, 1.0),
+            end=(0.4, 0.22, 0.6),
         ),
-        _sidebar_scene(
-            "chat", "Real-time chat",
-            "Chat keeps the conversation going in real time with every collaborator on the project.", 0.326,
+        Scene(
+            key="chat",
+            title="Real-time chat",
+            narration=(
+                "Chat keeps the conversation going in real time with every collaborator, organised into "
+                "In Progress, Upcoming, Requests and History, with voice calls one tap away."
+            ),
+            motion=(
+                "Start on the conversation list, then drift right to the message thread with Prajith Nair as "
+                "new blue message bubbles slide in; the cursor rests on the Enter Message box."
+            ),
+            image=CHAT,
+            duration=6,
+            start=(0.5, 0.35, 1.0),
+            end=(0.66, 0.35, 0.7),
         ),
-        _sidebar_scene(
-            "shipment", "Shipment assistant",
-            "Supporting services start with Shipment: an AI assistant for logistics and shipping of "
-            "samples and materials between labs.", 0.466,
+        Scene(
+            key="shipment",
+            title="Shipment assistant",
+            narration=(
+                "Supporting services start with Shipment: an AI assistant for logistics. Ask how to ship blood "
+                "sample slides to the UAE and it walks through packaging, documentation, courier, temperature "
+                "control and customs."
+            ),
+            motion=(
+                "Push in on the Shipment chat: the AI greeting, the user's question on the right, then the "
+                "assistant's step-by-step answer scrolling up from below."
+            ),
+            image=SHIPMENT,
+            duration=6,
+            start=(0.5, 0.3, 1.0),
+            end=(0.45, 0.28, 0.65),
         ),
-        _sidebar_scene(
-            "quotation", "Pricing and quotations",
-            "Quotation produces pricing and quotations for services and materials in a few clicks.", 0.507,
+        Scene(
+            key="quotation",
+            title="Pricing and quotations",
+            narration=(
+                "Quotation is a second AI assistant for pricing, estimates and quotation requests for services "
+                "and materials, answered in a few clicks."
+            ),
+            motion=(
+                "Push in on the Quotation assistant's greeting bubble while the 'Quotation' sidebar item stays "
+                "highlighted; the cursor moves to the Enter Message box."
+            ),
+            image=QUOTATION,
+            start=(0.5, 0.35, 1.0),
+            end=(0.35, 0.2, 0.55),
         ),
         _sidebar_scene(
             "equipment", "Equipment rentals",
